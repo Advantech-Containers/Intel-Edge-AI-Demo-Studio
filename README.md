@@ -83,13 +83,12 @@ The following Docker volumes persist across restarts:
 
 ![Architecture Diagram](./data/images/Architecture.png)
 
-## 8. Best Practice / Known Limitations
+## 4. Best Practice / Known Limitations
 
 **Best practices:**
 
 - Pre-pull the image before deployment: `docker compose pull`.
 - Allocate enough RAM and storage for the largest model you intend to run; model conversion needs temporary headroom.
-- Use the `models` volume so converted models survive container restarts and upgrades.
 - Verify host GPU/NPU drivers are installed and the device nodes (`/dev/dri`, `/dev/accel`) exist before enabling acceleration.
 
 **Known limitations:**
@@ -97,4 +96,3 @@ The following Docker volumes persist across restarts:
 - **Intel hardware only** — GPU/NPU acceleration is not available on non-Intel platforms; such hosts fall back to CPU inference.
 - NPU acceleration requires Intel® Core™ Ultra (Meteor Lake) or newer.
 - GPU acceleration requires the host render group to be passed into the container.
-- Single-container deployment — `<TODO: note any scaling / multi-node limitations>`.
