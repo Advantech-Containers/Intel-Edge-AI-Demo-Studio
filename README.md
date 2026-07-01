@@ -37,11 +37,9 @@ Edge AI Demo Studio targets **Intel platforms only**. CPU inference works on any
 
 ## 4. Prerequisite Software Libraries Installed on Host OS
 
-| Requirement                                                           | Version                  | Required for                    |
-| --------------------------------------------------------------------- | ------------------------ | ------------------------------- |
-| [Docker Engine](https://www.docker.com/get-started/) + Compose plugin | `<TODO: e.g. 24.x+>`     | All deployments                 |
-| Intel GPU drivers / compute runtime (Level Zero, OpenCL)              | `<TODO: driver version>` | GPU acceleration (`/dev/dri`)   |
-| Intel NPU driver                                                      | `<TODO: driver version>` | NPU acceleration (`/dev/accel`) |
+## Requirement
+
+- [Docker Engine](https://www.docker.com/get-started/) + Compose plugin
 
 ## Quick Start Guide
 
@@ -57,8 +55,6 @@ This script will:
 - Verify that Docker Engine (with the Compose plugin) is installed; if not, it prints install instructions and exits
 - Detect Intel GPU (`/dev/dri`) and NPU (`/dev/accel`) and automatically enable hardware acceleration in `docker-compose.yml`
 
-> **Docker not installed?** Follow the official guide at [https://docs.docker.com/engine/install/](https://docs.docker.com/engine/install/), then re-run `bash setup.sh`.
->
 > **Reboot required after driver install** — The Open Edge Platform installer may update the kernel or other system components. When this happens the script will detect a reboot-required flag and exit with clear instructions. **Reboot the system and re-run `bash setup.sh`** — the second run will detect your GPU/NPU and configure `docker-compose.yml` automatically. Even if no flag is detected, a reboot is recommended before starting the container if drivers were just installed.
 
 ### 2. Start the App
@@ -83,12 +79,13 @@ The following Docker volumes persist across restarts:
 
 ![Architecture Diagram](./data/images/Architecture.png)
 
-## 4. Best Practice / Known Limitations
+## 8. Best Practice / Known Limitations
 
 **Best practices:**
 
 - Pre-pull the image before deployment: `docker compose pull`.
 - Allocate enough RAM and storage for the largest model you intend to run; model conversion needs temporary headroom.
+- Use the `models` volume so converted models survive container restarts and upgrades.
 - Verify host GPU/NPU drivers are installed and the device nodes (`/dev/dri`, `/dev/accel`) exist before enabling acceleration.
 
 **Known limitations:**
