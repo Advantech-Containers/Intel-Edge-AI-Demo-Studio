@@ -65,7 +65,25 @@ docker compose up -d
 
 Once started, access the web UI at [http://localhost:8080](http://localhost:8080).
 
-### 3. Persistent data
+### 3. Verify Installation (Optional)
+
+```bash
+bash wise-bench.sh
+```
+
+`wise-bench.sh` is a diagnostics tool that verifies your host environment and the running container. It checks and reports on:
+
+- **System info** — hostname, OS, kernel, CPU, and memory
+- **Host software** — Docker Engine, Compose plugin, OpenCL, and device nodes (`/dev/dri`, `/dev/accel`)
+- **Intel GPU** — driver presence, OpenVINO GPU enumeration, and PyTorch XPU support
+- **Intel NPU** — driver presence and OpenVINO NPU detection
+- **Docker container** — whether the `edge-ai-demo-studio` container is running and the image size
+- **Web UI / API** — whether the service is reachable on port `8080`
+- **Overall score** — a summary pass/fail across all checks with a progress bar
+
+A full log is saved to `/tmp/wise-bench.log` for later review. Run this script after setup to confirm everything is working, or when troubleshooting an issue.
+
+### 4. Persistent data
 
 The following Docker volumes persist across restarts:
 
