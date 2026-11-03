@@ -20,8 +20,11 @@ NC='\033[0m'
 
 # Config
 CONTAINER_NAME="${EDGE_AI_CONTAINER:-edge-ai-demo-studio}"
-IMAGE_NAME="harbor.edgesync.cloud/intel/edge-ai-demo-studio:v1.0.0"
+IMAGE_NAME="${EDGE_AI_IMAGE:-harbor.edgesync.cloud/intel/edge-ai-demo-studio:v1.0.0}"
 WEB_PORT="${EDGE_AI_PORT:-8080}"
+# Kept in sync with scripts/install_drivers.sh
+MIN_KERNEL_VERSION="7.0"
+NPU_DRIVER_VERSION="1.38.0"
 
 clear
 echo -e "${BLUE}${BOLD}+------------------------------------------------------+${NC}"
@@ -87,8 +90,28 @@ else
     print_table_row "Compose Plugin" "⚠ Not installed"
     COMPOSE_PKG=0
 fi
-CLINFO_DEV=$(command -v clinfo >/dev/null 2>&1 && clinfo 2>/dev/null | grep -ci "intel" || echo 0)
-[ "$CLINFO_DEV" -gt 0 ] && print_table_row "OpenCL (Intel)" "✓ Available" || print_table_row "OpenCL (Intel)" "⚠ Not found"
+# Host kernel and drivers, as installed by scripts/install_drivers.sh
+KERNEL_RUNNING="$(uname -r)"
+if [ "$(printf '%s\n%s\n' "$MIN_KERNEL_VERSION" "${KERNEL_RUNNING%%-*}" | sort -V | head -n1)" = "$MIN_KERNEL_VERSION" ]; then
+    print_table_row "Kernel >= $MIN_KERNEL_VERSION" "✓ ${KERNEL_RUNNING:0:17}"
+    KERNEL_OK=1
+else
+    print_table_row "Kernel >= $MIN_KERNEL_VERSION" "⚠ ${KERNEL_RUNNING:0:17}"
+    KERNEL_OK=0
+fi
+pkg_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null; }
+OMIX_VER=$(pkg_version intel-omix)
+[ -n "$OMIX_VER" ] && print_table_row "Intel OMIX (GPU)" "✓ ${OMIX_VER:0:17}" || print_table_row "Intel OMIX (GPU)" "⚠ Not installed"
+NPU_PKG_VER=$(pkg_version intel-level-zero-npu)
+if [[ "$NPU_PKG_VER" == "$NPU_DRIVER_VERSION"* ]]; then
+    print_table_row "NPU Driver" "✓ $NPU_DRIVER_VERSION"
+elif [ -n "$NPU_PKG_VER" ]; then
+    print_table_row "NPU Driver" "⚠ ${NPU_PKG_VER:0:13} != $NPU_DRIVER_VERSION"
+else
+    print_table_row "NPU Driver" "⚠ Not installed"
+fi
+ZE_VER=$(pkg_version libze1)
+[ -n "$ZE_VER" ] && print_table_row "Level Zero (libze1)" "✓ ${ZE_VER%%-*}" || print_table_row "Level Zero (libze1)" "⚠ Not installed"
 [ -e /dev/dri/renderD128 ] && print_table_row "GPU Render Node" "✓ /dev/dri" || print_table_row "GPU Render Node" "⚠ Missing"
 [ -e /dev/accel/accel0 ] && print_table_row "NPU Accel Node" "✓ /dev/accel" || print_table_row "NPU Accel Node" "⚠ Missing"
 # uv (used for OpenVINO/PyTorch device verification)
@@ -131,18 +154,19 @@ print_table_header "GPU DETAILS"
 
 if [ -d /dev/dri ] && ls /dev/dri/render* >/dev/null 2>&1; then
     print_table_row "/dev/dri" "✓ Present"
-    lsmod 2>/dev/null | grep -qi 'i915\|xe' && print_table_row "Intel GPU Driver" "✓ Loaded" || print_table_row "Intel GPU Driver" "⚠ Not detected"
+    lsmod 2>/dev/null | grep -qE '^(i915|xe)[[:space:]]' && print_table_row "Intel GPU Driver" "✓ Loaded" || print_table_row "Intel GPU Driver" "⚠ Not detected"
 
-    GPU_NAMES=$(clinfo -l 2>/dev/null | grep -i 'device' | sed 's/.*Device[[:space:]]*#[0-9]*:[[:space:]]*//' | grep -i intel | awk '!seen[$0]++')
-    if [ -n "$GPU_NAMES" ]; then
-        i=0
-        while IFS= read -r g; do
-            print_table_row "GPU $i" "$g"
-            i=$((i+1))
-        done <<< "$GPU_NAMES"
-    else
-        print_table_row "GPU" "$(lspci 2>/dev/null | grep -i 'vga\|display\|3d' | grep -i intel | head -1 | cut -d':' -f3- | sed 's/^[ \t]*//')"
-    fi
+    # One row per Intel GPU bound to i915/xe: kernel driver and PCI ID
+    i=0
+    for card in /sys/class/drm/card[0-9]*; do
+        [[ "$(basename "$card")" =~ ^card[0-9]+$ ]] || continue
+        [ "$(cat "$card/device/vendor" 2>/dev/null)" = "0x8086" ] || continue
+        drv=$(basename "$(readlink -f "$card/device/driver" 2>/dev/null)")
+        dev_id=$(sed 's/^0x//' "$card/device/device" 2>/dev/null)
+        print_table_row "GPU $i" "$drv 8086:$dev_id"
+        i=$((i+1))
+    done
+    [ "$i" -eq 0 ] && print_table_row "GPU" "⚠ No Intel GPU bound"
 
     # OpenVINO GPU verification (pass = all GPUs detected by OpenVINO)
     if [ -n "$OV_GPUS" ]; then
@@ -187,7 +211,7 @@ else
     print_table_row "/dev/accel" "⚠ Not found"
     NPU_NODE=0
 fi
-if lsmod 2>/dev/null | grep -qi 'intel_vpu\|intel_npu'; then
+if lsmod 2>/dev/null | grep -qE '^intel_vpu[[:space:]]'; then
     print_table_row "Intel NPU Driver" "✓ Loaded"
 elif dmesg 2>/dev/null | grep -qi 'intel_vpu\|intel.*npu'; then
     print_table_row "Intel NPU Driver" "✓ Present"
@@ -233,10 +257,49 @@ IMAGE_INFO=$(docker images "$IMAGE_NAME" --format "{{.Size}}" 2>/dev/null || ech
 print_table_row "Image Size" "${IMAGE_INFO:-not found}"
 print_table_footer
 
+# ── Section 4b: Accelerators Inside the Container ───────────────
+# The image ships its own GPU (Intel OMIX) and NPU userspace drivers; this checks
+# the device passthrough from docker-compose.yml and that those drivers see it.
+print_header "CONTAINER ACCELERATORS"
+print_table_header "IN-CONTAINER DEVICES"
+CT_GPU=0
+CT_NPU=0
+if [ "$CONTAINER_OK" -eq 1 ]; then
+    docker exec "$CONTAINER_NAME" sh -c 'ls /dev/dri/render* >/dev/null 2>&1' \
+        && print_table_row "/dev/dri passthrough" "✓ Present" || print_table_row "/dev/dri passthrough" "⚠ Not passed"
+    docker exec "$CONTAINER_NAME" sh -c 'ls /dev/accel/accel* >/dev/null 2>&1' \
+        && print_table_row "/dev/accel passthrough" "✓ Present" || print_table_row "/dev/accel passthrough" "⚠ Not passed"
+
+    echo "▶ Querying OpenVINO devices inside the container..."
+    CT_OV=$(docker exec "$CONTAINER_NAME" /home/ubuntu/workers/.venv/bin/python -c "from openvino import Core; c=Core(); [print(d+': '+c.get_property(d,'FULL_DEVICE_NAME')) for d in c.available_devices]" 2>/dev/null || echo "")
+    if [ -n "$CT_OV" ]; then
+        while IFS= read -r d; do
+            print_table_row "OpenVINO" "${d:0:19}"
+        done <<< "$CT_OV"
+    else
+        print_table_row "OpenVINO" "⚠ Query failed"
+    fi
+    echo "$CT_OV" | grep -q '^GPU' && CT_GPU=1
+    echo "$CT_OV" | grep -q '^NPU' && CT_NPU=1
+    [ "$CT_GPU" -eq 1 ] && print_table_row "Container GPU" "✓ Usable" || print_table_row "Container GPU" "⚠ Not usable"
+    [ "$CT_NPU" -eq 1 ] && print_table_row "Container NPU" "✓ Usable" || print_table_row "Container NPU" "⚠ Not usable"
+
+    # qmassa feeds the GPU usage graphs on the System Monitoring page
+    if docker exec "$CONTAINER_NAME" sh -c 'f=$(mktemp) && /home/ubuntu/thirdparty/qmassa/bin/qmassa --no-tui --nr-iterations 2 --ms-interval 500 --to-json "$f" >/dev/null 2>&1 && grep -q devs_state "$f"; r=$?; rm -f "$f"; exit $r' 2>/dev/null; then
+        print_table_row "GPU monitor (qmassa)" "✓ Working"
+    else
+        print_table_row "GPU monitor (qmassa)" "⚠ No GPU stats"
+    fi
+else
+    print_table_row "Container" "⚠ Not running"
+    print_table_row "Status" "⚠ Skipped"
+fi
+print_table_footer
+
 # ── Section 5: Web UI / API Check ───────────────────────────────
 print_header "WEB UI / API CHECK"
 print_table_header "SERVICE DETAILS"
-if curl --silent --fail "http://localhost:${WEB_PORT}" > /dev/null 2>&1; then
+if curl --silent --fail "http://127.0.0.1:${WEB_PORT}" > /dev/null 2>&1; then
     print_table_row "Web UI ($WEB_PORT)" "✓ Reachable"
     WEBUI_STATUS=1
 else
@@ -249,7 +312,7 @@ print_table_footer
 print_header "SERVICE VALIDATION RUN"
 print_table_header "ONE-TIME SERVICE TEST"
 echo "▶ Probing service once to confirm it is valid..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "http://localhost:${WEB_PORT}" 2>/dev/null || echo "000")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 "http://127.0.0.1:${WEB_PORT}" 2>/dev/null || echo "000")
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "301" ]; then
     print_table_row "HTTP Response" "✓ $HTTP_CODE"
     print_table_row "Service Run" "✓ Valid"
@@ -264,14 +327,17 @@ print_table_footer
 # ── Section 8: Summary ──────────────────────────────────────────
 print_header "DIAGNOSTICS SUMMARY"
 print_table_header "OVERALL STATUS"
+print_table_row "Kernel >= $MIN_KERNEL_VERSION" "$([[ $KERNEL_OK -eq 1 ]] && echo '✓ OK' || echo '⚠ Too old')"
 print_table_row "Intel GPU /dev/dri" "$([[ $GPU_DETECTED -eq 1 ]] && echo '✓ OK' || echo '⚠ Missing')"
 print_table_row "Intel NPU /dev/accel" "$([[ $NPU_DETECTED -eq 1 ]] && echo '✓ OK' || echo '⚠ Missing')"
 print_table_row "Docker Container" "$([[ $CONTAINER_OK -eq 1 ]] && echo '✓ Running' || echo '⚠ Stopped')"
+print_table_row "Container GPU" "$([[ $CT_GPU -eq 1 ]] && echo '✓ OK' || echo '⚠ Missing')"
+print_table_row "Container NPU" "$([[ $CT_NPU -eq 1 ]] && echo '✓ OK' || echo '⚠ Missing')"
 print_table_row "Web UI / API" "$([[ $WEBUI_STATUS -eq 1 ]] && echo '✓ OK' || echo '⚠ Down')"
 print_table_row "Service Run" "$([[ $SERVICE_RUN -eq 1 ]] && echo '✓ OK' || echo '⚠ Failed')"
 
-TOTAL=$((GPU_DETECTED + NPU_DETECTED + CONTAINER_OK + WEBUI_STATUS + SERVICE_RUN))
-MAX=5
+TOTAL=$((KERNEL_OK + GPU_DETECTED + NPU_DETECTED + CONTAINER_OK + CT_GPU + CT_NPU + WEBUI_STATUS + SERVICE_RUN))
+MAX=8
 PERCENTAGE=$((TOTAL * 100 / MAX))
 
 BAR_SIZE=20

@@ -11,11 +11,12 @@ banner() { hr; printf "  %s\n" "$1"; hr; echo ""; }
 
 # ── Step 1: Install Intel GPU / NPU host drivers ───────────────────────────────
 banner "Step 1/4 — Install Intel GPU / NPU host drivers"
-echo "Running the Open Edge Platform main installer (requires sudo)..."
-echo "Source: https://github.com/open-edge-platform/edge-developer-kit-reference-scripts"
+echo "Checking the kernel and installing the Intel GPU (Intel OMIX) and NPU drivers"
+echo "(requires sudo). Sources: repositories.intel.com, github.com/intel/linux-npu-driver"
+echo "and the Ubuntu archive; no Launchpad PPA is used."
 echo ""
 
-sudo bash -c "$(wget -qLO - https://raw.githubusercontent.com/open-edge-platform/edge-developer-kit-reference-scripts/refs/heads/main/main_installer.sh)"
+sudo bash "$SCRIPT_DIR/scripts/install_drivers.sh"
 
 if [[ -f /var/run/reboot-required ]]; then
     echo ""
@@ -23,8 +24,8 @@ if [[ -f /var/run/reboot-required ]]; then
     echo "║  REBOOT REQUIRED                                    ║"
     echo "║                                                     ║"
     echo "║  The driver installer updated system components     ║"
-    echo "║  (e.g. the kernel) that require a reboot before    ║"
-    echo "║  the new drivers become active.                     ║"
+    echo "║  (e.g. the kernel or NPU firmware) that require a   ║"
+    echo "║  reboot before the new drivers become active.       ║"
     echo "║                                                     ║"
     echo "║  Please reboot now and then re-run this script:     ║"
     echo "║    sudo reboot                                      ║"
@@ -150,9 +151,18 @@ fi
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 banner "Setup complete"
+IMAGE_NAME="$(awk '/^ *image:/ {print $2; exit}' "$COMPOSE_FILE")"
+if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    echo "Image $IMAGE_NAME is not on this host yet."
+    echo "'docker compose up -d' pulls it from harbor.edgesync.cloud (about 7 GB),"
+    echo "or pull it in advance with:"
+    echo ""
+    echo "  docker compose pull"
+    echo ""
+fi
 echo "Start Edge AI Demo Studio with:"
 echo ""
 echo "  docker compose up -d"
 echo ""
-echo "Web UI: http://localhost:8080"
+echo "Web UI: http://127.0.0.1:8080 (on this device)"
 echo ""
